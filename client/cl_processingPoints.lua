@@ -1,4 +1,4 @@
-local config = CConfigStore:new() --[[@as CConfigStore]]
+local config = CConfigStore:new()
 
 ---Check if the specified player is in the law enforcement groups
 ---Not passing any player will check the local player
