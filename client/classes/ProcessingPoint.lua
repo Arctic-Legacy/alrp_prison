@@ -2,20 +2,23 @@ local PH_L_Hand <const> = 60309
 local TABLET_ANIMATION_DIRECTORY <const> = 'amb@code_human_in_bus_passenger_idles@female@tablet@base'
 local TABLET_ANIMATION_NAME <const> = 'base'
 local BLEND_OUT_SPEED <const> = 0.5
+local PLAYER_CONTROL <const> = 0
+local INPUT_CONTEXT <const> = 51 -- E/DPAD LEFT
 
 ---@class CProcessingPoint
----@field private private { m_config: any, m_interactionPoint: any, m_tabletHandle: number, m_nearbyPlayers: table }
+---@field private private { m_name: string, m_coordinate: vector3, m_interactionDistance: number, m_interactionPoint: any, m_tabletHandle: number, m_nearbyPlayers: table }
 CProcessingPoint = lib.class('CProcessingPoint')
 
 ---Creates the a new instance of CProcessingPoint
----@param coordinates vector3
+---@param coordinate vector3
 ---@param interactionDistance number
-function CProcessingPoint:constructor(coordinates, interactionDistance)
-  --self.private.m_config = config
+function CProcessingPoint:constructor(name, coordinate, interactionDistance)
+  self.private.m_name = name
+  self.private.m_coordinate = coordinate
+  self.private.m_interactionDistance = interactionDistance or 5
+  self.private.m_interactionPoint = false
   self.private.m_tabletHandle = 0
   self.private.m_nearbyPlayers = {}
-
-  self:createInteractionPoint(coordinates, interactionDistance)
 
   CreateThread(function(_)
     while true do
@@ -26,6 +29,19 @@ function CProcessingPoint:constructor(coordinates, interactionDistance)
       end
     end
   end)
+end
+
+---Returns the name of the processing point
+function CProcessingPoint:getName()
+  return self.private.m_name
+end
+
+function CProcessingPoint:getCoordinate()
+  return self.private.m_coordinate
+end
+
+function CProcessingPoint:getInteractionDistance()
+  return self.private.m_interactionDistance
 end
 
 ---Returns the tablet handle of the processing point.
@@ -46,24 +62,30 @@ function CProcessingPoint:getNearbyPlayers()
   return self.private.m_nearbyPlayers
 end
 
-function CProcessingPoint:updateNearbyPlayers()
-  for playerIndex in pairs(self.private.m_nearbyPlayers) do
+function CProcessingPoint:removeStalePlayers()
+  local nearbyPlayers = self:getNearbyPlayers()
+
+  for playerIndex in pairs(nearbyPlayers) do
     if GetPlayerName(playerIndex) == 'Invalid' then
       self.private.m_nearbyPlayers[playerIndex] = nil
     end
   end
+end
+
+function CProcessingPoint:updateNearbyPlayers()
+  self:removeStalePlayers()
 
   local activePlayers = GetActivePlayers()
 
-  -- Add players that have just entered our scope
   for index = 1, #activePlayers do
     local playerIndex = activePlayers[index]
 
     if not self.private.m_nearbyPlayers[playerIndex] then
       self.private.m_nearbyPlayers[playerIndex] = {
-        source = playerIndex,
+        source = GetPlayerServerId(playerIndex),
         name = GetPlayerName(playerIndex),
-        job = ''
+        job = '',
+        ignored = IsPlayerLawEnforcement(playerIndex)
       }
     end
   end
@@ -82,33 +104,27 @@ function CProcessingPoint:displayHelpMessage(inputType)
   EndTextCommandDisplayHelp(0, false, true, -1)
 end
 
----comment
 function CProcessingPoint:openTablet()
   if not lib.requestAnimDict(TABLET_ANIMATION_DIRECTORY) then
-    warn('Failed to load animation directory in time')
+    warn('Failed to load animation directory in time skipping tablet animation')
     return
   end
 
-  local networkTabletHandle, objectCreationError = lib.callback.await('alrp:prison:requestTabletObject', false)
+  local networkTabletHandle, tabletCreationError = lib.callback.await('alrp:prison:requestTabletObject', false)
 
   if not NetworkDoesNetworkIdExist(networkTabletHandle) then
-    self:displayHelpMessage(objectCreationError)
+    self:displayHelpMessage(tabletCreationError)
     return
   end
 
   local tabletHandle = NetworkGetEntityFromNetworkId(networkTabletHandle)
 
   if not DoesEntityExist(tabletHandle) then
-    lib.notify({
-      description = objectCreationError or
-      ('No object creation error but failed to convert %s into a usable object handle (To many networked objects?)')
-      :format(networkTabletHandle),
-      type = 'error'
-    })
+    warn('Failed to convert network tablet handle to local handle skipping tablet animation.')
     return
   end
 
-  self.private.m_tabletHandle = tabletHandle
+  self:setTabletHandle(tabletHandle)
 
   local playerPed = cache.ped
   local playerLeftHandBoneIndex = GetPedBoneIndex(playerPed, PH_L_Hand)
@@ -124,7 +140,6 @@ function CProcessingPoint:openTablet()
   RemoveAnimDict(TABLET_ANIMATION_DIRECTORY)
 end
 
----comment
 function CProcessingPoint:closeTablet()
   local playerPed = cache.ped
 
@@ -139,33 +154,12 @@ function CProcessingPoint:closeTablet()
   self.private.m_tabletHandle = 0
 end
 
--- Helper function to check if a player is restricted (e.g., police, fire, etc.)
-function CProcessingPoint:isNearbyPlayerRestricted(playerIndex)
-  -- Retrieve the player's job using NDCore.getRemotePlayerJob (assuming it's available)
-  local playerJob = NDCore.getRemotePlayerJob(playerIndex)
-
-  -- List of restricted jobs (e.g., police, paramedic, fire)
-  local restrictedJobs = {
-  }
-
-  -- Check if the player's job is in the restricted list
-  for _, restrictedJob in ipairs(restrictedJobs) do
-    if playerJob == restrictedJob then
-      return true  -- Player is in a restricted job
-    end
-  end
-
-  return false  -- Player is not restricted
-end
-
----comment
----@param coordinates any
----@param interactionDistance any
-function CProcessingPoint:createInteractionPoint(coordinates, interactionDistance)
+function CProcessingPoint:createInteractionPoint()
   local point = lib.points.new({
-    coords = coordinates,
-    distance = interactionDistance
+    coords = self:getCoordinate(),
+    distance = self:getInteractionDistance()
   })
+
   local processingPoint = self
 
   function point:onEnter()
@@ -177,7 +171,7 @@ function CProcessingPoint:createInteractionPoint(coordinates, interactionDistanc
   end
 
   function point:nearby()
-    if IsControlJustReleased(0, 51) then
+    if IsControlJustReleased(PLAYER_CONTROL, INPUT_CONTEXT) and not processingPoint:getTabletHandle() ~= 0 then
       processingPoint:openTablet()
 
       SendNUIMessage({
@@ -188,11 +182,12 @@ function CProcessingPoint:createInteractionPoint(coordinates, interactionDistanc
     end
   end
 
-  ---@diagnostic disable-next-line: inject-field
   self.private.m_interactionPoint = point
 end
 
----comment
 function CProcessingPoint:removeInteractionPoint()
-  self.private.m_interactionPoint:remove()
+  if self.private.m_interactionPoint then
+    self.private.m_interactionPoint:remove()
+    self.private.m_interactionPoint = nil
+  end
 end
