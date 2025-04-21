@@ -1,60 +1,63 @@
-local processingPoints = {}
+local config = CConfigStore:new() --[[@as CConfigStore]]
 
----comment
-local function unregisterProcessingPoints()
-  local processingPointsLength = #processingPoints
+---Check if the specified player is in the law enforcement groups
+---Not passing any player will check the local player
+---@param playerIndex number?
+---@return boolean
+function IsPlayerLawEnforcement(playerIndex)
+  local playerJob
 
-  if processingPointsLength < 1 then
-    return
+  if playerIndex then
+    playerJob = NDCore.getRemotePlayerJob(playerIndex)
+  else
+    playerJob = NDCore.getPlayer()?.job
   end
+
+  if type(playerJob) ~= 'string' or not config:getLawEnforcementGroups()[playerJob:lower()] then
+    return false
+  end
+
+  return true
+end
+
+---Unregisters processing points
+local function unregisterProcessingPoints()
+  local processingPoints = config:getProcessingPoints()
 
   ClearAllHelpMessages()
 
-  for index = 1, processingPointsLength do
-    local processingPoint = processingPoints[index]
+  for processingPointIndex = 1, #processingPoints do
+    local processingPoint = processingPoints[processingPointIndex]
 
     processingPoint:removeInteractionPoint()
   end
-
-  table.wipe(processingPoints)
 end
 
----comment
+---Registers processing points
 local function registerProcessingPoints()
-  if #processingPoints >= 1 then
-    unregisterProcessingPoints()
+  local processingPoints = config:getProcessingPoints()
+
+  for processingPointIndex = 1, #processingPoints do
+    local processingPoint = processingPoints[processingPointIndex]
+
+    processingPoint:createInteractionPoint()
   end
-
-  for index = 1, #config.accessLocation do
-    local interactionCoordinates = config.accessLocation[index]
-
-    table.insert(processingPoints, CProcessingPoint:new(interactionCoordinates, 5))
-  end
-end
-
--- make this not a global or put it in a util file
-function isJobAllowed(jobName)
-  local allowedJobs = {
-    ['sahp'] = true,
-    ['bcso'] = true
-  }
-
-  return allowedJobs[jobName] ~= nil
 end
 
 RegisterNUICallback('closeTablet', function(_, callback)
+  local processingPoints = config:getProcessingPoints()
   local processingPointsLength = #processingPoints
 
   if processingPointsLength < 1 then
     warn('Received closeTablet from NUI but no processing points have been registered')
   end
 
-  for processingPointIndex = 1, #processingPoints do
+  for processingPointIndex = 1, processingPointsLength do
     local processingPoint = processingPoints[processingPointIndex]
 
     if processingPoint:getTabletHandle() ~= 0 then
       processingPoint:closeTablet()
-      break -- There should only ever be one tablet open at a time
+      break
     end
   end
 
@@ -67,9 +70,7 @@ RegisterNetEvent("ND:characterUnloaded", function(_)
 end)
 
 RegisterNetEvent('ND:characterLoaded', function(character)
-  local characterJob = character.job
-
-  if not isJobAllowed(characterJob) then
+  if not IsPlayerLawEnforcement() then
     return
   end
 
@@ -77,14 +78,8 @@ RegisterNetEvent('ND:characterLoaded', function(character)
 end)
 
 RegisterNetEvent("ND:updateCharacter", function(character)
-  local characterJob = character.job
-
-  if not isJobAllowed(characterJob) then
-
-    if #processingPoints >= 1 then
-      unregisterProcessingPoints()
-    end
-
+  if not IsPlayerLawEnforcement() then
+    unregisterProcessingPoints()
     return
   end
 
@@ -97,16 +92,10 @@ AddEventHandler('onClientResourceStart', function(resourceName)
   end
 
   AddTextEntry('BEGIN_PROCESSING_PLAYER', 'Press ~INPUT_CONTEXT~ to begin processing nearby players')
+  AddTextEntry('NO_TABLET_PERMISSION', '')
+  AddTextEntry('FAILED_TO_CREATE_TABLET', '')
 
-  local character = NDCore.getPlayer()
-
-  if not character then
-    return
-  end
-
-  local characterJob = character.job
-
-  if not isJobAllowed(characterJob) then
+  if not IsPlayerLawEnforcement() then
     return
   end
 
